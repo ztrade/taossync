@@ -164,7 +164,7 @@ func (s *TaosSync) prepareTables(tables map[string]TableInfo) (err error) {
 }
 
 func (s *TaosSync) syncOneTable(tbl TableInfo, start, end time.Time) (err error) {
-	s.src.Exec("use ?", s.cfg.Dst.DB)
+	s.src.Exec("use ?", s.cfg.Src.DB)
 	s.dst.Exec("use ?", s.cfg.Dst.DB)
 	logrus.Infof("sync %s, %s - %s", tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339))
 
@@ -233,7 +233,7 @@ func (s *TaosSync) refreshSTableCols() (err error) {
 	var sql string
 	for _, st := range s.cfg.STables {
 		info := make(map[string]interface{})
-		row := s.src.QueryRowx("SHOW CREATE STABLE ?.?", s.cfg.Dst.DB, st)
+		row := s.src.QueryRowx("SHOW CREATE STABLE ?.?", s.cfg.Src.DB, st)
 		err = row.MapScan(info)
 		if err != nil {
 			return
