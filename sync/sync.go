@@ -171,6 +171,11 @@ func (s *TaosSync) syncOneTable(tbl TableInfo, start, end time.Time) (err error)
 	temp := make(map[string]interface{})
 	err = s.src.QueryRowx("select count(*) as total from ? where ts >= '?' and ts<='?'", tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339)).MapScan(temp)
 	if err != nil {
+		if strings.Contains(err.Error(), "no rows in result set") {
+			logrus.Infof("skip no datas: %s, %s - %s", tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339))
+			err = nil
+			return
+		}
 		err = fmt.Errorf("count table failed: %w", err)
 		return
 	}
