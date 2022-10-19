@@ -137,9 +137,10 @@ func (s *TaosSync) getTables(stable string) (tables map[string]TableInfo, err er
 		if err != nil {
 			return
 		}
+		// fmt.Println("table info:", info)
 		sql = info["Create Table"].(string)
 		v.Create = strings.Replace(sql, "CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1)
-		tables[tbl.TableName] = v
+		tables[v.TableName] = v
 	}
 	rows.Close()
 
