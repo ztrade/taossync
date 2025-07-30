@@ -7,7 +7,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
-	_ "github.com/taosdata/driver-go/v3/taosSql"
+	_ "github.com/taosdata/driver-go/v3/taosWS"
 )
 
 type DataConfig struct {
@@ -16,9 +16,11 @@ type DataConfig struct {
 }
 
 type SyncConfig struct {
-	Src     DataConfig
-	Dst     DataConfig
-	STables []string
+	Src      DataConfig
+	Dst      DataConfig
+	STables  []string
+	TimeCol  string
+	SyncOnce time.Duration
 }
 
 type TableInfo struct {
@@ -51,11 +53,15 @@ type TaosSync struct {
 func NewTaosSync(cfg *SyncConfig) (s *TaosSync, err error) {
 	s = new(TaosSync)
 	s.cfg = cfg
-	s.src, err = sqlx.Connect("taosSql", s.cfg.Src.URI)
+	// 如果未设置时间戳列名，则默认为"ts"
+	if s.cfg.TimeCol == "" {
+		s.cfg.TimeCol = "ts"
+	}
+	s.src, err = sqlx.Connect("taosWS", s.cfg.Src.URI)
 	if err != nil {
 		return
 	}
-	s.dst, err = sqlx.Connect("taosSql", s.cfg.Dst.URI)
+	s.dst, err = sqlx.Connect("taosWS", s.cfg.Dst.URI)
 	if err != nil {
 		return
 	}
@@ -165,12 +171,45 @@ func (s *TaosSync) prepareTables(tables map[string]TableInfo) (err error) {
 }
 
 func (s *TaosSync) syncOneTable(tbl TableInfo, start, end time.Time) (err error) {
+	// 如果未设置SyncOnce或者SyncOnce为0，则直接调用syncOneTableOnce进行完整同步
+	if s.cfg.SyncOnce <= 0 {
+		return s.syncOneTableOnce(tbl, start, end)
+	}
+	
+	// 按照SyncOnce配置的时间间隔分段同步
+	current := start
+	for current.Before(end) {
+		next := current.Add(s.cfg.SyncOnce)
+		if next.After(end) {
+			next = end
+		}
+		
+		for i := 0; i < 3; i++ {
+			err = s.syncOneTableOnce(tbl, current, next)
+			if err != nil {
+				logrus.Errorf("Sync table %s failed: %v, %d times", tbl.TableName, err, i+1)
+				if i == 2 {
+					return fmt.Errorf("sync table %s failed after 3 attempts: %w", tbl.TableName, err)
+				}
+				time.Sleep(time.Second * time.Duration(i+1)) // 简单的退避重试
+				continue
+			}
+			break
+		}
+		
+		current = next
+	}
+	return nil
+}
+
+func (s *TaosSync) syncOneTableOnce(tbl TableInfo, start, end time.Time) (err error) {
+
 	s.src.Exec("use ?", s.cfg.Src.DB)
 	s.dst.Exec("use ?", s.cfg.Dst.DB)
 	logrus.Infof("sync %s, %s - %s", tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339))
 
 	temp := make(map[string]interface{})
-	err = s.src.QueryRowx("select count(*) as total from ? where ts >= '?' and ts<='?'", tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339)).MapScan(temp)
+	err = s.src.QueryRowx(fmt.Sprintf("select count(*) as total from ? where %s >= '?' and %s<='?'", s.cfg.TimeCol, s.cfg.TimeCol), tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339)).MapScan(temp)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows in result set") {
 			logrus.Infof("skip no datas: %s, %s - %s", tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339))
@@ -182,7 +221,7 @@ func (s *TaosSync) syncOneTable(tbl TableInfo, start, end time.Time) (err error)
 	}
 	nSrcTotal := temp["total"].(int64)
 
-	rows, err := s.src.Queryx("select * from ? where ts >= '?' and ts<='?'", tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339))
+	rows, err := s.src.Queryx(fmt.Sprintf("select * from ? where %s >= '?' and %s<='?'", s.cfg.TimeCol, s.cfg.TimeCol), tbl.TableName, start.Format(time.RFC3339), end.Format(time.RFC3339))
 	if err != nil {
 		return
 	}
